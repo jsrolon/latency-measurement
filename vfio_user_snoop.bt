@@ -1,0 +1,98 @@
+#!/usr/bin/env bpftrace
+/*
+ * undump	Trace unix domain socket package receive.
+ *		For Linux, uses bpftrace and eBPF.
+ *
+ * Also a basic example of bpftrace.
+ *
+ * This is a bpftrace version of the bcc examples/tracing of the same name.
+ *
+ * USAGE: undump.bt
+ *
+ * Copyright 2022 CESTC, Inc.
+ * Licensed under the Apache License, Version 2.0 (the "License")
+ *
+ * 22-May-2022	Rong Tao	Created this.
+ */
+#ifndef BPFTRACE_HAVE_BTF
+#include <linux/socket.h>
+#endif
+
+struct vfio_user_p {
+    uint16_t    msg_id;
+    uint16_t    cmd;
+    uint32_t    msg_size;
+	uint32_t	flags;
+	uint32_t	error;
+	void* data;
+};
+
+struct vfio_user_region_write_req {
+	uint64_t	offset;
+	uint32_t	region;
+	uint32_t	count;
+	void* data;
+};
+
+BEGIN
+{
+	@qemu_pid = $1;
+	@vfio_user_socket_fd = $2;
+	printf("%-2s %-8s %-4s %-4s %-4s %-4s %-8s\n", "UX", "MSGID", "CMD", "SZ", "FLG", "ERR", "DATA");
+}
+
+// field:int __syscall_nr; offset:8;       size:4; signed:1;
+// field:int fd;   offset:16;      size:8; signed:0;
+// field:struct user_msghdr * msg; offset:24;      size:8; signed:0;
+// field:unsigned int flags;       offset:32;      size:8; signed:0;
+tracepoint:syscalls:sys_enter_sendmsg
+/ pid == @qemu_pid /
+{
+	$fd = args->fd;
+	if ($fd == @vfio_user_socket_fd) {
+		$vfio_user_msg_iov = ((struct iovec *)args->msg->msg_iov)[0];
+		$vfio_user_packet = $vfio_user_msg_iov.iov_base;
+		$vfio_user_header = (struct vfio_user_p *)$vfio_user_packet;
+		
+		if($vfio_user_header->cmd > 0) {
+			printf("%-2s %-8d %-4d %-4d %-4d %-4d %r\n",
+			"->",
+			$vfio_user_header->msg_id, 
+			$vfio_user_header->cmd,
+			$vfio_user_header->msg_size, 
+			$vfio_user_header->flags, 
+			$vfio_user_header->error,
+			buf($vfio_user_header->data, $vfio_user_header->msg_size));
+		}
+	}
+}
+
+// field:int __syscall_nr; offset:8;       size:4; signed:1;
+// field:int fd;   offset:16;      size:8; signed:0;
+// field:struct user_msghdr * msg; offset:24;      size:8; signed:0;
+// field:unsigned int flags;       offset:32;      size:8; signed:0;
+tracepoint:syscalls:sys_enter_recvmsg
+/ pid == $1 /
+{
+	$fd = args->fd;
+	if ($fd == @vfio_user_socket_fd) {
+		$vfio_user_msg_iov = ((struct iovec *)args->msg->msg_iov)[0];
+		$vfio_user_packet = $vfio_user_msg_iov.iov_base;
+		$vfio_user_header = (struct vfio_user_p *)$vfio_user_packet;
+		
+		if($vfio_user_header->cmd > 0) {
+			printf("%-2s %-8d %-4d %-4d %-4d %-4d %r\n",
+				"<-",
+				$vfio_user_header->msg_id, 
+				$vfio_user_header->cmd,
+				$vfio_user_header->msg_size, 
+				$vfio_user_header->flags, 
+				$vfio_user_header->error,
+				buf($vfio_user_header->data, $vfio_user_header->msg_size));
+		}
+	}
+}
+
+END
+{
+}
