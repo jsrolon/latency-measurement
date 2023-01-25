@@ -18,27 +18,54 @@
 #include <linux/socket.h>
 #endif
 
-struct vfio_user_p {
+struct vfio_user_header {
     uint16_t    msg_id;
     uint16_t    cmd;
     uint32_t    msg_size;
 	uint32_t	flags;
 	uint32_t	error;
-	void* data;
 };
 
-struct vfio_user_region_write_req {
-	uint64_t	offset;
-	uint32_t	region;
-	uint32_t	count;
-	void* data;
+struct vfio_user_packet_irq {
+    struct vfio_user_header header;
+	uint32_t				argsz;
+	uint32_t				flags;
+	uint32_t				index;
+	uint32_t				start;
+	uint32_t				count;
+	void*					data;
+};
+
+struct vfio_user_packet_rw {
+	struct vfio_user_header header;
+	uint64_t				offset;
+	uint32_t				region;
+	uint32_t				count;
+	void* 					data;
 };
 
 BEGIN
 {
+	@vfio_user_msg_ids[1] = "version";
+	@vfio_user_msg_ids[2] = "dma_map";
+	@vfio_user_msg_ids[3] = "dma_unmap";
+	@vfio_user_msg_ids[4] = "info";
+	@vfio_user_msg_ids[5] = "region_info";
+	@vfio_user_msg_ids[6] = "region_io_fds";
+	@vfio_user_msg_ids[7] = "irq_info";
+	@vfio_user_msg_ids[8] = "irq";
+	@vfio_user_msg_ids[9] = "r_read";
+	@vfio_user_msg_ids[10] = "r_write";
+	@vfio_user_msg_ids[11] = "d_read";
+	@vfio_user_msg_ids[12] = "d_write";
+	@vfio_user_msg_ids[13] = "reset";
+	@vfio_user_msg_ids[14] = "dirty_pages";
+
+	@count[8] = 0; // command counter
+	
 	@qemu_pid = $1;
 	@vfio_user_socket_fd = $2;
-	printf("%-2s %-8s %-4s %-4s %-4s %-4s %-8s\n", "UX", "MSGID", "CMD", "SZ", "FLG", "ERR", "DATA");
+	printf("%-2s %-6s %-14s %-4s %-4s %-4s %-8s\n", "UX", "MSGID", "CMD", "SZ", "FLG", "ERR", "DATA");
 }
 
 // field:int __syscall_nr; offset:8;       size:4; signed:1;
@@ -51,18 +78,35 @@ tracepoint:syscalls:sys_enter_sendmsg
 	$fd = args->fd;
 	if ($fd == @vfio_user_socket_fd) {
 		$vfio_user_msg_iov = ((struct iovec *)args->msg->msg_iov)[0];
-		$vfio_user_packet = $vfio_user_msg_iov.iov_base;
-		$vfio_user_header = (struct vfio_user_p *)$vfio_user_packet;
+		$vfio_user_header = (struct vfio_user_header *)$vfio_user_msg_iov.iov_base;
 		
-		if($vfio_user_header->cmd > 0) {
-			printf("%-2s %-8d %-4d %-4d %-4d %-4d %r\n",
+		$cmd = $vfio_user_header->cmd;
+		if($cmd > 0) {
+			printf("%-2s %-6d %-14s %-4d %-4d %-4d ",
 			"->",
 			$vfio_user_header->msg_id, 
-			$vfio_user_header->cmd,
+			@vfio_user_msg_ids[$cmd],
 			$vfio_user_header->msg_size, 
-			$vfio_user_header->flags, 
-			$vfio_user_header->error,
-			buf($vfio_user_header->data, $vfio_user_header->msg_size));
+			$vfio_user_header->flags,
+			$vfio_user_header->error);
+
+			if($cmd == 8) { // irq sets
+				$packet_irq = (struct vfio_user_packet_irq *)$vfio_user_msg_iov.iov_base;
+				printf("ASZ=%-12d FLAGS=%-4d IDX=%-4d START=%-4d COUNT=%-4d DATA=%r", 
+				$packet_irq->argsz, 
+				$packet_irq->flags, 
+				$packet_irq->index,
+				$packet_irq->start,
+				$packet_irq->count,
+				buf($packet_irq->data, $packet_irq->count));
+			}
+			
+			if($cmd == 9 || $cmd == 10) { // reads and writes
+				$packet_rw = (struct vfio_user_packet_rw *)$vfio_user_msg_iov.iov_base;
+				printf("OFF=%-12d REG=%-4d COUNT=%-4d DATA=%r", $packet_rw->offset, $packet_rw->region, $packet_rw->count, buf($packet_rw->data, $packet_rw->count));
+			}
+
+			printf("\n");
 		}
 	}
 }
@@ -77,18 +121,37 @@ tracepoint:syscalls:sys_enter_recvmsg
 	$fd = args->fd;
 	if ($fd == @vfio_user_socket_fd) {
 		$vfio_user_msg_iov = ((struct iovec *)args->msg->msg_iov)[0];
-		$vfio_user_packet = $vfio_user_msg_iov.iov_base;
-		$vfio_user_header = (struct vfio_user_p *)$vfio_user_packet;
+		$vfio_user_header = (struct vfio_user_header *)$vfio_user_msg_iov.iov_base;
 		
-		if($vfio_user_header->cmd > 0) {
-			printf("%-2s %-8d %-4d %-4d %-4d %-4d %r\n",
-				"<-",
-				$vfio_user_header->msg_id, 
-				$vfio_user_header->cmd,
-				$vfio_user_header->msg_size, 
-				$vfio_user_header->flags, 
-				$vfio_user_header->error,
-				buf($vfio_user_header->data, $vfio_user_header->msg_size));
+		$cmd = $vfio_user_header->cmd;
+		if($cmd > 0) {
+			@count[$cmd]++;
+
+			printf("%-2s %-6d %-14s %-4d %-4d %-4d ",
+			"<-",
+			$vfio_user_header->msg_id, 
+			@vfio_user_msg_ids[$cmd],
+			$vfio_user_header->msg_size, 
+			$vfio_user_header->flags,
+			$vfio_user_header->error);
+
+			if($cmd == 8) { // irq sets
+				$packet_irq = (struct vfio_user_packet_irq *)$vfio_user_msg_iov.iov_base;
+				printf("ASZ=%-12d FLAGS=%-4d IDX=%-4d START=%-4d COUNT=%-4d DATA=%r", 
+				$packet_irq->argsz, 
+				$packet_irq->flags, 
+				$packet_irq->index,
+				$packet_irq->start,
+				$packet_irq->count,
+				buf($packet_irq->data, $packet_irq->count));
+			}
+			
+			if($cmd == 9 || $cmd == 10) { // reads and writes
+				$packet_rw = (struct vfio_user_packet_rw *)$vfio_user_msg_iov.iov_base;
+				printf("OFF=%-12d REG=%-4d COUNT=%-4d DATA=%r", $packet_rw->offset, $packet_rw->region, $packet_rw->count, buf($packet_rw->data, $packet_rw->count));
+			}
+
+			printf("\n");
 		}
 	}
 }
