@@ -116,7 +116,7 @@ tracepoint:syscalls:sys_enter_sendmsg
 // field:struct user_msghdr * msg; offset:24;      size:8; signed:0;
 // field:unsigned int flags;       offset:32;      size:8; signed:0;
 tracepoint:syscalls:sys_enter_recvmsg
-/ pid == $1 /
+/ pid == @qemu_pid /
 {
 	$fd = args->fd;
 	if ($fd == @vfio_user_socket_fd) {
