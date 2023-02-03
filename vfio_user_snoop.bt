@@ -46,26 +46,9 @@ struct vfio_user_packet_rw {
 
 BEGIN
 {
-	@vfio_user_msg_ids[1] = "version";
-	@vfio_user_msg_ids[2] = "dma_map";
-	@vfio_user_msg_ids[3] = "dma_unmap";
-	@vfio_user_msg_ids[4] = "info";
-	@vfio_user_msg_ids[5] = "region_info";
-	@vfio_user_msg_ids[6] = "region_io_fds";
-	@vfio_user_msg_ids[7] = "irq_info";
-	@vfio_user_msg_ids[8] = "irq";
-	@vfio_user_msg_ids[9] = "r_read";
-	@vfio_user_msg_ids[10] = "r_write";
-	@vfio_user_msg_ids[11] = "d_read";
-	@vfio_user_msg_ids[12] = "d_write";
-	@vfio_user_msg_ids[13] = "reset";
-	@vfio_user_msg_ids[14] = "dirty_pages";
-
-	@count[8] = 0; // command counter
-	
-	@qemu_pid = $1;
+	@qemu_pid = (uint64)$1;
 	@vfio_user_socket_fd = $2;
-	printf("%-2s %-6s %-14s %-4s %-4s %-4s %-8s\n", "UX", "MSGID", "CMD", "SZ", "FLG", "ERR", "DATA");
+	printf("Will print packet averages on exit...\n");
 }
 
 // field:int __syscall_nr; offset:8;       size:4; signed:1;
@@ -75,38 +58,26 @@ BEGIN
 tracepoint:syscalls:sys_enter_sendmsg
 / pid == @qemu_pid /
 {
+	$enter_sendmsg_timestamp = nsecs;
+	
 	$fd = args->fd;
 	if ($fd == @vfio_user_socket_fd) {
 		$vfio_user_msg_iov = ((struct iovec *)args->msg->msg_iov)[0];
 		$vfio_user_header = (struct vfio_user_header *)$vfio_user_msg_iov.iov_base;
 		
+		@before[$vfio_user_header->msg_id] = 0;
+		
 		$cmd = $vfio_user_header->cmd;
-		if($cmd > 0) {
-			printf("%-2s %-6d %-14s %-4d %-4d %-4d ",
-			"->",
-			$vfio_user_header->msg_id, 
-			@vfio_user_msg_ids[$cmd],
-			$vfio_user_header->msg_size, 
-			$vfio_user_header->flags,
-			$vfio_user_header->error);
+		if($cmd == 8) {
+			@time_irq[$vfio_user_header->msg_id] = $enter_sendmsg_timestamp;
+		}
 
-			if($cmd == 8) { // irq sets
-				$packet_irq = (struct vfio_user_packet_irq *)$vfio_user_msg_iov.iov_base;
-				printf("ASZ=%-12d FLAGS=%-4d IDX=%-4d START=%-4d COUNT=%-4d DATA=%r", 
-				$packet_irq->argsz, 
-				$packet_irq->flags, 
-				$packet_irq->index,
-				$packet_irq->start,
-				$packet_irq->count,
-				buf($packet_irq->data, $packet_irq->count));
-			}
-			
-			if($cmd == 9 || $cmd == 10) { // reads and writes
-				$packet_rw = (struct vfio_user_packet_rw *)$vfio_user_msg_iov.iov_base;
-				printf("OFF=%-12d REG=%-4d COUNT=%-4d DATA=%r", $packet_rw->offset, $packet_rw->region, $packet_rw->count, buf($packet_rw->data, $packet_rw->count));
-			}
+		if($cmd == 9) {
+			@time_reads[$vfio_user_header->msg_id] = $enter_sendmsg_timestamp;
+		}
 
-			printf("\n");
+		if($cmd == 10) {
+			@time_writes[$vfio_user_header->msg_id] = $enter_sendmsg_timestamp;
 		}
 	}
 }
@@ -118,44 +89,63 @@ tracepoint:syscalls:sys_enter_sendmsg
 tracepoint:syscalls:sys_enter_recvmsg
 / pid == @qemu_pid /
 {
+	$enter_recvmsg_timestamp = nsecs;
+
 	$fd = args->fd;
 	if ($fd == @vfio_user_socket_fd) {
 		$vfio_user_msg_iov = ((struct iovec *)args->msg->msg_iov)[0];
 		$vfio_user_header = (struct vfio_user_header *)$vfio_user_msg_iov.iov_base;
-		
-		$cmd = $vfio_user_header->cmd;
-		if($cmd > 0) {
-			@count[$cmd]++;
 
-			printf("%-2s %-6d %-14s %-4d %-4d %-4d ",
-			"<-",
-			$vfio_user_header->msg_id, 
-			@vfio_user_msg_ids[$cmd],
-			$vfio_user_header->msg_size, 
-			$vfio_user_header->flags,
-			$vfio_user_header->error);
+		$id = $vfio_user_header->msg_id;
+		if(@before[$id] == 1) {
+			$cmd = $vfio_user_header->cmd;
+			if($cmd == 8) {
+				if(@time_irq[$id] > 0) {
+					//printf("%x - %x\n", $enter_recvmsg_timestamp, @time_irq[$id]);
+					$elapsed = $enter_recvmsg_timestamp - @time_irq[$id];
 
-			if($cmd == 8) { // irq sets
-				$packet_irq = (struct vfio_user_packet_irq *)$vfio_user_msg_iov.iov_base;
-				printf("ASZ=%-12d FLAGS=%-4d IDX=%-4d START=%-4d COUNT=%-4d DATA=%r", 
-				$packet_irq->argsz, 
-				$packet_irq->flags, 
-				$packet_irq->index,
-				$packet_irq->start,
-				$packet_irq->count,
-				buf($packet_irq->data, $packet_irq->count));
-			}
-			
-			if($cmd == 9 || $cmd == 10) { // reads and writes
-				$packet_rw = (struct vfio_user_packet_rw *)$vfio_user_msg_iov.iov_base;
-				printf("OFF=%-12d REG=%-4d COUNT=%-4d DATA=%r", $packet_rw->offset, $packet_rw->region, $packet_rw->count, buf($packet_rw->data, $packet_rw->count));
+					@irq_avg = avg($elapsed);
+					@irq_min = min($elapsed);
+					@irq_max = max($elapsed);
+				}
 			}
 
-			printf("\n");
+			if($cmd == 9) {
+				if(@time_reads[$id] > 0) {
+					//printf("%x - %x\n", $enter_recvmsg_timestamp, @time_reads[$id]);
+					$elapsed = $enter_recvmsg_timestamp - @time_reads[$id];
+
+					@reads_avg = avg($elapsed);
+					@reads_min = min($elapsed);
+					@reads_max = max($elapsed);
+				}
+			}
+
+			if($cmd == 10) {
+				if(@time_writes[$id] > 0) {
+					//printf("%x - %x\n", $enter_recvmsg_timestamp, @time_writes[$id]);
+					$elapsed = $enter_recvmsg_timestamp - @time_writes[$id];
+
+					@writes_avg = avg($elapsed);
+					@writes_min = min($elapsed);
+					@writes_max = max($elapsed);
+				}
+			}
+		} else {
+			@before[$id]++;
 		}
 	}
 }
 
 END
 {
+	clear(@qemu_pid);
+	clear(@vfio_user_socket_fd);
+
+	clear(@before);
+
+	// even though we do the deletes above, sometimes a dangling write ends up here
+	clear(@time_irq);
+	clear(@time_reads);
+	clear(@time_writes);
 }
