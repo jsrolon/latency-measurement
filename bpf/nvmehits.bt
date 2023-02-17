@@ -19,9 +19,29 @@ BEGIN
         @ioopcode[0x15] = "nvme_cmd_resv_release";
 }
 
+tracepoint:nvme:nvme_setup_cmd
+{
+    @start[args->cid] = nsecs;
 
+    // opcode is not available once request is complete, so we store it
+    @opcode[args->cid] = args->opcode;
+}
+
+tracepoint:nvme:nvme_complete_rq
+/@start[args->cid]/
+{
+    $last_time = nsecs;
+    $elapsed = $last_time - @start[args->cid];
+
+    $opcode = @ioopcode[@opcode[args->cid]];
+
+    printf("%s %d\n", $opcode, $elapsed);
+
+    delete(@start[args->cid]);
+    delete(@opcode[args->cid]);
+}
 
 END
 {
-        clear(@ioopcode); clear(@start); clear(@cmd);
+    clear(@ioopcode); clear(@start); clear(@opcode);
 }
