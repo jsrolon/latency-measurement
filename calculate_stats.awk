@@ -5,26 +5,26 @@ BEGIN {
     MAX = 0; 
 }
 
-{ 
-    if($1 < Min && $1 > 0) {
-        Min = $1
+/nvme_cmd_flush/ { 
+    if($2 < Min && $2 > 0) {
+        Min = $2
     }
 
-    if($1 > MAX) {
-        MAX = $1
+    if($2 > MAX) {
+        MAX = $2
     } 
     
     count++; 
-    mean_diff = ($1 - mean) / count; 
+    mean_diff = ($2 - mean) / count; 
     new_mean = mean + mean_diff; 
-    d_sq_inc = ($1 - new_mean) * ($1 - mean); 
+    d_sq_inc = ($2 - new_mean) * ($2 - mean); 
     mean = new_mean; 
     d_sq = d_sq + d_sq_inc; 
 }
 
 END {
-    print mean; 
-    print sqrt(d_sq / count); 
-    print Min; 
-    print MAX; 
+    printf "mean %f\n", mean; 
+    printf "stdev %f\n", sqrt(d_sq / count); 
+    printf "min %d\n", Min; 
+    printf "max %d\n", MAX; 
 }
