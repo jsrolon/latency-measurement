@@ -1,6 +1,6 @@
 [global]
 filename=/dev/nvme0n1
-rw=randwrite
+rw=randread
 size=128m
 ioengine=sync
 direct=1
